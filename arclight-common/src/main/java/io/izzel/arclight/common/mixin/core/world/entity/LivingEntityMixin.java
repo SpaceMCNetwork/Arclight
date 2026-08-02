@@ -4,10 +4,10 @@ import com.google.common.base.Function;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.mojang.datafixers.util.Either;
-import io.izzel.arclight.common.bridge.core.entity.LivingEntityBridge;
-import io.izzel.arclight.common.bridge.core.entity.player.ServerPlayerEntityBridge;
-import io.izzel.arclight.common.bridge.core.network.play.ServerGamePacketListenerBridge;
-import io.izzel.arclight.common.bridge.core.world.IWorldBridge;
+import io.izzel.arclight.common.bridge.core.world.entity.LivingEntityBridge;
+import io.izzel.arclight.common.bridge.core.server.level.ServerPlayerBridge;
+import io.izzel.arclight.common.bridge.core.server.network.ServerGamePacketListenerImplBridge;
+import io.izzel.arclight.common.bridge.core.world.level.LevelAccessorBridge;
 import io.izzel.arclight.common.mod.server.ArclightServer;
 import io.izzel.arclight.common.mod.server.event.ArclightEventFactory;
 import io.izzel.arclight.common.util.IteratorUtil;
@@ -70,6 +70,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.objectweb.asm.Opcodes;
+import org.slf4j.Logger;
+import org.spigotmc.SpigotConfig;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
@@ -245,6 +247,14 @@ public abstract class LivingEntityMixin extends EntityMixin implements LivingEnt
             }
         }
         effectsToProcess.clear();
+    }
+
+    @Decorate(method = "die", at = @At(value = "INVOKE", target = "Lorg/slf4j/Logger;info(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Object;)V"))
+    private void arclight$logNamedEntityDeath(Logger instance, String s, Object o1, Object o2) throws Throwable {
+        if (!SpigotConfig.logNamedDeaths) {
+            return;
+        }
+        DecorationOps.callsite().invoke(instance, s, o1, o2);
     }
 
     private transient EntityPotionEffectEvent.Cause arclight$cause;
@@ -435,15 +445,15 @@ public abstract class LivingEntityMixin extends EntityMixin implements LivingEnt
 
     @Inject(method = "getHealth", cancellable = true, at = @At("HEAD"))
     public void arclight$scaledHealth(CallbackInfoReturnable<Float> cir) {
-        if (this instanceof ServerPlayerEntityBridge && ((ServerPlayerEntityBridge) this).bridge$initialized()) {
-            cir.setReturnValue((float) ((ServerPlayerEntityBridge) this).bridge$getBukkitEntity().getHealth());
+        if (this instanceof ServerPlayerBridge && ((ServerPlayerBridge) this).bridge$initialized()) {
+            cir.setReturnValue((float) ((ServerPlayerBridge) this).bridge$getBukkitEntity().getHealth());
         }
     }
 
     @Inject(method = "setHealth", cancellable = true, at = @At("HEAD"))
     public void arclight$setScaled(float health, CallbackInfo ci) {
-        if (this instanceof ServerPlayerEntityBridge && ((ServerPlayerEntityBridge) this).bridge$initialized()) {
-            CraftPlayer player = ((ServerPlayerEntityBridge) this).bridge$getBukkitEntity();
+        if (this instanceof ServerPlayerBridge && ((ServerPlayerBridge) this).bridge$initialized()) {
+            CraftPlayer player = ((ServerPlayerBridge) this).bridge$getBukkitEntity();
 
             double realHealth = Mth.clamp(health, 0.0F, player.getMaxHealth());
             player.setRealHealth(realHealth);
@@ -687,12 +697,14 @@ public abstract class LivingEntityMixin extends EntityMixin implements LivingEnt
 
     @Decorate(method = "createWitherRose", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;setBlock(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;I)Z"))
     private boolean arclight$fireWitherRoseForm(Level level, BlockPos pos, BlockState newState, int flags) throws Throwable {
-        final var event = ArclightEventFactory.callBlockFormEvent(((IWorldBridge) level).bridge$getMinecraftWorld(), pos, newState, flags, null);
-        if (event != null) {
-            if (event.isCancelled()) {
-                return false;
+        if (LevelAccessorBridge.from(level) instanceof LevelAccessorBridge bridge) {
+            final var event = ArclightEventFactory.callBlockFormEvent(bridge.bridge$getMinecraftWorld(), pos, newState, flags, null);
+            if (event != null) {
+                if (event.isCancelled()) {
+                    return false;
+                }
+                newState = ((CraftBlockState) event.getNewState()).getHandle();
             }
-            newState = ((CraftBlockState) event.getNewState()).getHandle();
         }
         return (boolean) DecorationOps.callsite().invoke(level, pos, newState, flags);
     }
@@ -723,13 +735,13 @@ public abstract class LivingEntityMixin extends EntityMixin implements LivingEnt
     @Decorate(method = "completeUsingItem", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/item/ItemStack;finishUsingItem(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack arclight$itemConsume(ItemStack itemStack, Level worldIn, LivingEntity entityLiving) throws
         Throwable {
-        if (this instanceof ServerPlayerEntityBridge) {
+        if (this instanceof ServerPlayerBridge) {
             final org.bukkit.inventory.ItemStack craftItem = CraftItemStack.asBukkitCopy(itemStack);
             final PlayerItemConsumeEvent event = new PlayerItemConsumeEvent((Player) this.getBukkitEntity(), craftItem, CraftEquipmentSlot.getHand(this.getUsedItemHand()));
             Bukkit.getPluginManager().callEvent(event);
             if (event.isCancelled()) {
-                ((ServerPlayerEntityBridge) this).bridge$getBukkitEntity().updateInventory();
-                ((ServerPlayerEntityBridge) this).bridge$getBukkitEntity().updateScaledHealth();
+                ((ServerPlayerBridge) this).bridge$getBukkitEntity().updateInventory();
+                ((ServerPlayerBridge) this).bridge$getBukkitEntity().updateScaledHealth();
                 return (ItemStack) DecorationOps.cancel().invoke();
             } else if (!craftItem.equals(event.getItem())) {
                 itemStack = CraftItemStack.asNMSCopy(event.getItem());
@@ -742,7 +754,7 @@ public abstract class LivingEntityMixin extends EntityMixin implements LivingEnt
     private void arclight$entityTeleport(LivingEntity entity, double x, double y, double z) throws Throwable {
         if ((Object) this instanceof ServerPlayer) {
             (((ServerPlayer) (Object) this).connection).teleport(x, y, z, this.getYRot(), this.getXRot(), java.util.Collections.emptySet());
-            if (!((ServerGamePacketListenerBridge) ((ServerPlayer) (Object) this).connection).bridge$teleportCancelled()) {
+            if (!((ServerGamePacketListenerImplBridge) ((ServerPlayer) (Object) this).connection).bridge$teleportCancelled()) {
                 DecorationOps.cancel().invoke(false);
                 return;
             }
