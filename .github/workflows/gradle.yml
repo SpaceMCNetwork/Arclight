@@ -1,40 +1,49 @@
-# This workflow will build a Java project with Gradle
-# For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-gradle
-
 name: Build
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
   push:
     branches:
-      - '**'
+      - "**"
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Set up JDK 21
-      uses: actions/setup-java@v1
-      with:
-        java-version: '21'
-    - name: Cache Gradle User Files
-      uses: actions/cache@v4
-      with:
-        path: ~/.gradle
-        key: ${{ runner.os }}-gradle-user-home
-    - name: Cache Gradle Files
-      uses: actions/cache@v4
-      with:
-        path: ./.gradle
-        key: ${{ runner.os }}-gradle-file
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-    - name: Build
-      env:
-        ARCLIGHT_FILES_TOKEN: ${{ secrets.ARCLIGHT_FILES_TOKEN }}
-      run: |
-        ./gradlew cleanBuild build collect uploadFiles --no-daemon --stacktrace
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build Arclight
+        env:
+          ARCLIGHT_FILES_TOKEN: ${{ secrets.ARCLIGHT_FILES_TOKEN }}
+        run: |
+          ./gradlew clean build collect --stacktrace --info --no-daemon
+
+      - name: Show generated JARs
+        run: |
+          echo "Generated JARs:"
+          find . -type f -name "*.jar"
+
+      - name: Upload JARs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Arclight-Build
+          path: |
+            build/libs/*.jar
+            bootstrap/build/libs/*.jar
+            arclight-*/build/libs/*.jar
+          if-no-files-found: error
